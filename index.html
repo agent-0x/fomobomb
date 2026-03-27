@@ -60,13 +60,12 @@
 <!-- History -->
 <div class="card p-5 mb-6">
   <div class="flex justify-between items-center mb-3">
-    <div class="font-semibold text-gray-300">全部投注记录</div>
+    <div class="font-semibold text-gray-300">最近投注</div>
     <div id="history-stats" class="text-xs text-gray-500"></div>
   </div>
   <div id="history">
     <div class="text-center text-gray-600 text-sm py-4">加载中...</div>
   </div>
-  <div id="pagination" class="flex justify-center items-center gap-2 mt-4"></div>
 </div>
 
 <!-- Contract Info -->
@@ -176,17 +175,19 @@ function renderLive(s) {
 }
 
 async function loadAllEvents() {
-  // Get all Bet, Win, JackpotWin events from contract
+  // Get recent events only (last 50000 blocks to avoid timeout)
+  const curBlock = await rpc('eth_blockNumber', []);
+  const from = '0x' + Math.max(0, fromHex(curBlock) - 50000).toString(16);
+
   const logs = await rpc('eth_getLogs', [{
-    fromBlock: '0x0', toBlock: 'latest', address: CONTRACT,
+    fromBlock: from, toBlock: 'latest', address: CONTRACT,
     topics: [[TOPIC_BET, TOPIC_WIN, TOPIC_JACKPOT]]
   }]);
 
   if (!logs) return;
 
-  // Build win/jackpot lookup
-  const winRounds = {};  // roundId -> {winner, prize}
-  const jackpotHits = {}; // blockNumber -> {winner, prize}
+  const winRounds = {};
+  const jackpotHits = {};
 
   logs.filter(l => l.topics[0] === TOPIC_WIN).forEach(l => {
     const roundId = fromHex(l.topics[1]);
@@ -203,7 +204,6 @@ async function loadAllEvents() {
     jackpotHits[block] = { winner, prize };
   });
 
-  // Parse bet events
   allEvents = [];
   logs.filter(l => l.topics[0] === TOPIC_BET).forEach(l => {
     const roundId = fromHex(l.topics[1]);
@@ -212,41 +212,33 @@ async function loadAllEvents() {
     const amount = fromHex(data.slice(0, 64)) / 1e18;
     const pool = fromHex(data.slice(64, 128)) / 1e18;
     const block = fromHex(l.blockNumber);
-    const txHash = l.transactionHash;
 
-    // Check if this player won the round
     const wonRound = winRounds[roundId] && winRounds[roundId].winner.toLowerCase() === player.toLowerCase();
-    // Check if hit jackpot at this block
     const hitJackpot = jackpotHits[block] && jackpotHits[block].winner.toLowerCase() === player.toLowerCase();
 
     allEvents.push({
-      roundId, player, amount, pool, block, txHash,
+      roundId, player, amount, pool, block,
       wonRound: wonRound ? winRounds[roundId].prize : 0,
       hitJackpot: hitJackpot ? jackpotHits[block].prize : 0,
     });
   });
 
-  // Reverse: newest first
+  // Newest first, keep max 10
   allEvents.reverse();
+  allEvents = allEvents.slice(0, 10);
 }
 
-function renderHistoryPage(page) {
-  currentPage = page;
+function renderHistoryPage() {
   const el = document.getElementById('history');
-  const pagEl = document.getElementById('pagination');
   const statsEl = document.getElementById('history-stats');
 
   if (allEvents.length === 0) {
     el.innerHTML = '<div class="text-center text-gray-600 text-sm py-4">暂无投注记录</div>';
-    pagEl.innerHTML = '';
     return;
   }
 
-  const totalPages = Math.ceil(allEvents.length / PAGE_SIZE);
-  const start = (page - 1) * PAGE_SIZE;
-  const pageEvents = allEvents.slice(start, start + PAGE_SIZE);
-
-  statsEl.textContent = `共 ${allEvents.length} 笔投注`;
+  const pageEvents = allEvents;
+  statsEl.textContent = `最近 ${allEvents.length} 笔`;
 
   el.innerHTML = `
     <table class="w-full text-sm">
@@ -284,23 +276,6 @@ function renderHistoryPage(page) {
       </tbody>
     </table>`;
 
-  // Pagination
-  let pagHtml = '';
-  if (totalPages > 1) {
-    pagHtml += `<span class="page-btn ${page <= 1 ? 'disabled' : ''}" onclick="${page > 1 ? 'renderHistoryPage('+(page-1)+')' : ''}">上一页</span>`;
-
-    // Show page numbers
-    let startPage = Math.max(1, page - 2);
-    let endPage = Math.min(totalPages, page + 2);
-    if (startPage > 1) pagHtml += `<span class="page-btn" onclick="renderHistoryPage(1)">1</span><span class="text-gray-600">...</span>`;
-    for (let i = startPage; i <= endPage; i++) {
-      pagHtml += `<span class="page-btn ${i === page ? 'active' : ''}" onclick="renderHistoryPage(${i})">${i}</span>`;
-    }
-    if (endPage < totalPages) pagHtml += `<span class="text-gray-600">...</span><span class="page-btn" onclick="renderHistoryPage(${totalPages})">${totalPages}</span>`;
-
-    pagHtml += `<span class="page-btn ${page >= totalPages ? 'disabled' : ''}" onclick="${page < totalPages ? 'renderHistoryPage('+(page+1)+')' : ''}">下一页</span>`;
-  }
-  pagEl.innerHTML = pagHtml;
 }
 
 async function update() {
@@ -308,7 +283,7 @@ async function update() {
     const s = await getStatus();
     renderLive(s);
     await loadAllEvents();
-    renderHistoryPage(currentPage);
+    renderHistoryPage();
   } catch(e) {
     console.error(e);
   }
