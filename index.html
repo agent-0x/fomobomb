@@ -20,6 +20,10 @@
   a { color: #60a5fa; }
   .table-row { border-bottom: 1px solid #1a1c28; }
   .table-row:hover { background: #1a1c2850; }
+  .page-btn { padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .page-btn:hover { background: #1e2030; }
+  .page-btn.active { background: #3b82f6; color: white; }
+  .page-btn.disabled { opacity: 0.3; cursor: default; }
 </style>
 </head>
 <body>
@@ -55,16 +59,14 @@
 
 <!-- History -->
 <div class="card p-5 mb-6">
-  <div class="font-semibold text-gray-300 mb-3">历史记录</div>
+  <div class="flex justify-between items-center mb-3">
+    <div class="font-semibold text-gray-300">全部投注记录</div>
+    <div id="history-stats" class="text-xs text-gray-500"></div>
+  </div>
   <div id="history">
     <div class="text-center text-gray-600 text-sm py-4">加载中...</div>
   </div>
-</div>
-
-<!-- Jackpot History -->
-<div id="jackpot-section" class="card p-5 mb-6 glow-purple hidden">
-  <div class="font-semibold text-purple-400 mb-3">大奖中奖记录</div>
-  <div id="jackpot-history"></div>
+  <div id="pagination" class="flex justify-center items-center gap-2 mt-4"></div>
 </div>
 
 <!-- Contract Info -->
@@ -78,19 +80,15 @@
 <script>
 const RPC = 'https://mainnet-rpc.axonchain.ai/';
 const CONTRACT = '0xc90576a5e136be4a1842c6883c6fe6cb43e02325';
+const PAGE_SIZE = 10;
 
-function keccak256Selector(sig) {
-  // Precomputed selectors
-  const map = {
-    'status()': '200d2ed2',
-    'history(uint256)': 'a7a38f0b',
-    'jackpotHistory(uint256)': 'f39a2b09',
-    'jackpotWins()': '1a1c5f5e',
-    'treasury()': '61d027b3',
-    'roundId()': '3a0b0ddd',
-  };
-  return map[sig] || '';
-}
+// Event topics
+const TOPIC_BET = '0x315f79b2e911ff337a4e3abb6fd6259eb634fc0289b5a99121ada71862b95d27';
+const TOPIC_WIN = '0x94dd8caf4803213035e054c595c14a4902fc45ff2d35957b439326822e434819';
+const TOPIC_JACKPOT = '0xb3c089216f23b7daf9ba89aed51ed7cd7a84a690165388c507a0da320840c29a';
+
+let allEvents = [];
+let currentPage = 1;
 
 async function rpc(method, params) {
   const r = await fetch(RPC, {
@@ -104,10 +102,8 @@ async function callContract(sel, args='') {
   return rpc('eth_call', [{to: CONTRACT, data: '0x' + sel + args}, 'latest']);
 }
 
-function hex(n) { return n.toString(16); }
 function fromHex(h) { return parseInt(h, 16); }
 function short(addr) { return addr ? addr.slice(0,8) + '...' + addr.slice(-4) : '-'; }
-function axon(wei) { return (wei / 1e18).toFixed(2); }
 
 async function getStatus() {
   const raw = (await callContract('200d2ed2')).slice(2);
@@ -128,19 +124,6 @@ async function getStatus() {
   };
 }
 
-async function getHistory(id) {
-  const raw = (await callContract('a7a38f0b', hex(id).padStart(64,'0'))).slice(2);
-  if (!raw || raw === '') return null;
-  const f = [];
-  for (let i = 0; i < raw.length; i += 64) f.push(raw.slice(i, i+64));
-  const winner = '0x' + f[0].slice(24);
-  const prize = fromHex(f[1]) / 1e18;
-  const totalBets = fromHex(f[2]);
-  const endBlock = fromHex(f[3]);
-  if (prize === 0 && totalBets === 0) return null;
-  return { id, winner, prize, totalBets, endBlock };
-}
-
 function renderLive(s) {
   const el = document.getElementById('live');
   if (!s.active && s.roundId === 0) {
@@ -151,32 +134,25 @@ function renderLive(s) {
 
   let countdownClass = 'text-green-400';
   let glowClass = 'glow-yellow';
-  let countdownExtra = '';
   let barColor = 'bg-green-500';
   const pct = Math.min(100, (100 - s.blocksLeft) / 100 * 100);
 
   if (s.claimable) {
     countdownClass = 'text-red-400 countdown-anim';
-    glowClass = 'glow-red';
-    barColor = 'bg-red-500';
+    glowClass = 'glow-red'; barColor = 'bg-red-500';
   } else if (s.blocksLeft <= 10) {
     countdownClass = 'text-red-400 pulse-slow';
-    glowClass = 'glow-red';
-    barColor = 'bg-red-500';
+    glowClass = 'glow-red'; barColor = 'bg-red-500';
   } else if (s.blocksLeft <= 30) {
-    countdownClass = 'text-yellow-400';
-    barColor = 'bg-yellow-500';
+    countdownClass = 'text-yellow-400'; barColor = 'bg-yellow-500';
   }
-
   const mins = (s.blocksLeft * 6 / 60).toFixed(1);
 
   el.className = `card p-6 mb-6 ${glowClass}`;
   el.innerHTML = `
     <div class="grid grid-cols-3 gap-4 mb-4 text-center">
       <div>
-        <div class="text-5xl font-bold mono ${countdownClass}">
-          ${s.claimable ? 'BOOM!' : s.blocksLeft}
-        </div>
+        <div class="text-5xl font-bold mono ${countdownClass}">${s.claimable ? 'BOOM!' : s.blocksLeft}</div>
         <div class="text-xs text-gray-500 mt-1">${s.claimable ? '等待领奖' : mins + ' 分钟'}</div>
         <div class="text-xs text-gray-600">剩余区块</div>
       </div>
@@ -190,120 +166,149 @@ function renderLive(s) {
         <div class="text-xs text-purple-500">2% 概率</div>
       </div>
     </div>
-
     <div class="w-full bg-gray-800 rounded-full h-3 mb-4 overflow-hidden">
       <div class="${barColor} h-3 rounded-full bar ${s.claimable ? 'w-full animate-pulse' : ''}" style="width:${s.claimable ? 100 : pct}%"></div>
     </div>
-
     <div class="flex justify-between text-sm">
-      <div class="text-gray-500">
-        最后: <span class="mono text-blue-400">${short(s.lastPlayer)}</span>
-        <span class="text-gray-600 ml-1">${s.lastBet.toFixed(1)} AXON</span>
-      </div>
-      <div class="text-gray-500">
-        Round <span class="mono">#${s.roundId}</span> ·
-        <span class="mono">${s.totalBets}</span> 次投注
-      </div>
-    </div>
-  `;
+      <div class="text-gray-500">最后: <span class="mono text-blue-400">${short(s.lastPlayer)}</span> <span class="text-gray-600 ml-1">${s.lastBet.toFixed(1)} AXON</span></div>
+      <div class="text-gray-500">Round <span class="mono">#${s.roundId}</span> · <span class="mono">${s.totalBets}</span> 次投注</div>
+    </div>`;
 }
 
-async function renderHistory(currentRound) {
+async function loadAllEvents() {
+  // Get all Bet, Win, JackpotWin events from contract
+  const logs = await rpc('eth_getLogs', [{
+    fromBlock: '0x0', toBlock: 'latest', address: CONTRACT,
+    topics: [[TOPIC_BET, TOPIC_WIN, TOPIC_JACKPOT]]
+  }]);
+
+  if (!logs) return;
+
+  // Build win/jackpot lookup
+  const winRounds = {};  // roundId -> {winner, prize}
+  const jackpotHits = {}; // blockNumber -> {winner, prize}
+
+  logs.filter(l => l.topics[0] === TOPIC_WIN).forEach(l => {
+    const roundId = fromHex(l.topics[1]);
+    const winner = '0x' + l.topics[2].slice(26);
+    const prize = fromHex(l.data.slice(0, 66)) / 1e18;
+    winRounds[roundId] = { winner, prize };
+  });
+
+  logs.filter(l => l.topics[0] === TOPIC_JACKPOT).forEach(l => {
+    const winner = '0x' + l.topics[1].slice(26);
+    const data = l.data.slice(2);
+    const prize = fromHex(data.slice(0, 64)) / 1e18;
+    const block = fromHex(l.blockNumber);
+    jackpotHits[block] = { winner, prize };
+  });
+
+  // Parse bet events
+  allEvents = [];
+  logs.filter(l => l.topics[0] === TOPIC_BET).forEach(l => {
+    const roundId = fromHex(l.topics[1]);
+    const player = '0x' + l.topics[2].slice(26);
+    const data = l.data.slice(2);
+    const amount = fromHex(data.slice(0, 64)) / 1e18;
+    const pool = fromHex(data.slice(64, 128)) / 1e18;
+    const block = fromHex(l.blockNumber);
+    const txHash = l.transactionHash;
+
+    // Check if this player won the round
+    const wonRound = winRounds[roundId] && winRounds[roundId].winner.toLowerCase() === player.toLowerCase();
+    // Check if hit jackpot at this block
+    const hitJackpot = jackpotHits[block] && jackpotHits[block].winner.toLowerCase() === player.toLowerCase();
+
+    allEvents.push({
+      roundId, player, amount, pool, block, txHash,
+      wonRound: wonRound ? winRounds[roundId].prize : 0,
+      hitJackpot: hitJackpot ? jackpotHits[block].prize : 0,
+    });
+  });
+
+  // Reverse: newest first
+  allEvents.reverse();
+}
+
+function renderHistoryPage(page) {
+  currentPage = page;
   const el = document.getElementById('history');
-  const rounds = [];
+  const pagEl = document.getElementById('pagination');
+  const statsEl = document.getElementById('history-stats');
 
-  for (let i = currentRound; i >= 1 && rounds.length < 20; i--) {
-    const h = await getHistory(i);
-    if (h) rounds.push(h);
-  }
-
-  if (rounds.length === 0) {
-    el.innerHTML = '<div class="text-center text-gray-600 text-sm py-4">暂无历史</div>';
+  if (allEvents.length === 0) {
+    el.innerHTML = '<div class="text-center text-gray-600 text-sm py-4">暂无投注记录</div>';
+    pagEl.innerHTML = '';
     return;
   }
 
+  const totalPages = Math.ceil(allEvents.length / PAGE_SIZE);
+  const start = (page - 1) * PAGE_SIZE;
+  const pageEvents = allEvents.slice(start, start + PAGE_SIZE);
+
+  statsEl.textContent = `共 ${allEvents.length} 笔投注`;
+
   el.innerHTML = `
     <table class="w-full text-sm">
       <thead>
         <tr class="text-gray-500 text-xs text-left">
-          <th class="pb-2">局</th>
-          <th class="pb-2">赢家</th>
+          <th class="pb-2">轮次</th>
+          <th class="pb-2">投注者</th>
+          <th class="pb-2 text-right">金额</th>
           <th class="pb-2 text-right">奖池</th>
-          <th class="pb-2 text-right">类型</th>
-          <th class="pb-2 text-right">投注数</th>
-          <th class="pb-2 text-right">结束区块</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rounds.map(r => `
-        <tr class="table-row">
-          <td class="py-2 mono text-gray-400">#${r.id}</td>
-          <td class="py-2 mono text-blue-400">${short(r.winner)}</td>
-          <td class="py-2 mono text-yellow-400 text-right">${r.prize.toFixed(2)}</td>
-          <td class="py-2 text-right"><span class="text-xs px-2 py-0.5 rounded-full bg-yellow-500/10 text-yellow-400">倒计时</span></td>
-          <td class="py-2 mono text-gray-400 text-right">${r.totalBets}</td>
-          <td class="py-2 mono text-gray-600 text-right">${r.endBlock.toLocaleString()}</td>
-        </tr>`).join('')}
-      </tbody>
-    </table>
-  `;
-
-  // Load jackpot history
-  await renderJackpotHistory();
-}
-
-async function renderJackpotHistory() {
-  const section = document.getElementById('jackpot-section');
-  const el = document.getElementById('jackpot-history');
-
-  // Get jackpotWins count
-  const winsRaw = await callContract('cb98df73');
-  const wins = fromHex(winsRaw);
-  if (wins === 0) { section.classList.add('hidden'); return; }
-
-  section.classList.remove('hidden');
-  const records = [];
-  for (let i = wins - 1; i >= 0 && records.length < 10; i--) {
-    const raw = (await callContract('8b31260f', hex(i).padStart(64,'0'))).slice(2);
-    const f = [];
-    for (let j = 0; j < raw.length; j += 64) f.push(raw.slice(j, j+64));
-    const winner = '0x' + f[0].slice(24);
-    const prize = fromHex(f[1]) / 1e18;
-    const atBlock = fromHex(f[2]);
-    const roundId = fromHex(f[3]);
-    if (prize > 0) records.push({ winner, prize, atBlock, roundId });
-  }
-
-  if (records.length === 0) { section.classList.add('hidden'); return; }
-
-  el.innerHTML = `
-    <table class="w-full text-sm">
-      <thead>
-        <tr class="text-gray-500 text-xs text-left">
-          <th class="pb-2">局</th>
-          <th class="pb-2">赢家</th>
-          <th class="pb-2 text-right">大奖金额</th>
+          <th class="pb-2 text-right">中奖</th>
           <th class="pb-2 text-right">区块</th>
         </tr>
       </thead>
       <tbody>
-        ${records.map(r => `
-        <tr class="table-row">
-          <td class="py-2 mono text-gray-400">#${r.roundId}</td>
-          <td class="py-2 mono text-purple-400">${short(r.winner)}</td>
-          <td class="py-2 mono text-purple-300 text-right">${r.prize.toFixed(2)}</td>
-          <td class="py-2 mono text-gray-600 text-right">${r.atBlock.toLocaleString()}</td>
-        </tr>`).join('')}
+        ${pageEvents.map(e => {
+          let badge = '<span class="text-gray-600 text-xs">-</span>';
+          if (e.wonRound > 0 && e.hitJackpot > 0) {
+            badge = `<span class="text-xs px-1.5 py-0.5 rounded-full bg-yellow-500/10 text-yellow-400">赢 ${e.wonRound.toFixed(1)}</span>
+                     <span class="text-xs px-1.5 py-0.5 rounded-full bg-purple-500/10 text-purple-400 ml-1">大奖 ${e.hitJackpot.toFixed(1)}</span>`;
+          } else if (e.wonRound > 0) {
+            badge = `<span class="text-xs px-1.5 py-0.5 rounded-full bg-yellow-500/10 text-yellow-400">赢 ${e.wonRound.toFixed(1)}</span>`;
+          } else if (e.hitJackpot > 0) {
+            badge = `<span class="text-xs px-1.5 py-0.5 rounded-full bg-purple-500/10 text-purple-400">大奖 ${e.hitJackpot.toFixed(1)}</span>`;
+          }
+          return `
+          <tr class="table-row">
+            <td class="py-2 mono text-gray-400">#${e.roundId}</td>
+            <td class="py-2 mono text-blue-400">${short(e.player)}</td>
+            <td class="py-2 mono text-gray-300 text-right">${e.amount.toFixed(1)}</td>
+            <td class="py-2 mono text-yellow-400/70 text-right">${e.pool.toFixed(1)}</td>
+            <td class="py-2 text-right">${badge}</td>
+            <td class="py-2 mono text-gray-600 text-right">${e.block.toLocaleString()}</td>
+          </tr>`;
+        }).join('')}
       </tbody>
-    </table>
-  `;
+    </table>`;
+
+  // Pagination
+  let pagHtml = '';
+  if (totalPages > 1) {
+    pagHtml += `<span class="page-btn ${page <= 1 ? 'disabled' : ''}" onclick="${page > 1 ? 'renderHistoryPage('+(page-1)+')' : ''}">上一页</span>`;
+
+    // Show page numbers
+    let startPage = Math.max(1, page - 2);
+    let endPage = Math.min(totalPages, page + 2);
+    if (startPage > 1) pagHtml += `<span class="page-btn" onclick="renderHistoryPage(1)">1</span><span class="text-gray-600">...</span>`;
+    for (let i = startPage; i <= endPage; i++) {
+      pagHtml += `<span class="page-btn ${i === page ? 'active' : ''}" onclick="renderHistoryPage(${i})">${i}</span>`;
+    }
+    if (endPage < totalPages) pagHtml += `<span class="text-gray-600">...</span><span class="page-btn" onclick="renderHistoryPage(${totalPages})">${totalPages}</span>`;
+
+    pagHtml += `<span class="page-btn ${page >= totalPages ? 'disabled' : ''}" onclick="${page < totalPages ? 'renderHistoryPage('+(page+1)+')' : ''}">下一页</span>`;
+  }
+  pagEl.innerHTML = pagHtml;
 }
 
 async function update() {
   try {
     const s = await getStatus();
     renderLive(s);
-    await renderHistory(s.roundId - (s.active ? 1 : 0));
+    await loadAllEvents();
+    renderHistoryPage(currentPage);
   } catch(e) {
     console.error(e);
   }
