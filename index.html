@@ -79,15 +79,7 @@
 <script>
 const RPC = 'https://mainnet-rpc.axonchain.ai/';
 const CONTRACT = '0xc90576a5e136be4a1842c6883c6fe6cb43e02325';
-const PAGE_SIZE = 10;
-
-// Event topics
-const TOPIC_BET = '0x315f79b2e911ff337a4e3abb6fd6259eb634fc0289b5a99121ada71862b95d27';
-const TOPIC_WIN = '0x94dd8caf4803213035e054c595c14a4902fc45ff2d35957b439326822e434819';
-const TOPIC_JACKPOT = '0xb3c089216f23b7daf9ba89aed51ed7cd7a84a690165388c507a0da320840c29a';
-
-let allEvents = [];
-let currentPage = 1;
+let allRounds = [];
 
 async function rpc(method, params) {
   const r = await fetch(RPC, {
@@ -174,115 +166,70 @@ function renderLive(s) {
     </div>`;
 }
 
-async function loadAllEvents() {
-  // Get recent events only (last 50000 blocks to avoid timeout)
-  const curBlock = await rpc('eth_blockNumber', []);
-  const from = '0x' + Math.max(0, fromHex(curBlock) - 50000).toString(16);
+async function loadRounds(currentRoundId) {
+  // Read last 10 completed rounds via history(uint256)
+  allRounds = [];
+  const histSel = 'a7a38f0b'; // history(uint256)
 
-  const logs = await rpc('eth_getLogs', [{
-    fromBlock: from, toBlock: 'latest', address: CONTRACT,
-    topics: [[TOPIC_BET, TOPIC_WIN, TOPIC_JACKPOT]]
-  }]);
-
-  if (!logs) return;
-
-  const winRounds = {};
-  const jackpotHits = {};
-
-  logs.filter(l => l.topics[0] === TOPIC_WIN).forEach(l => {
-    const roundId = fromHex(l.topics[1]);
-    const winner = '0x' + l.topics[2].slice(26);
-    const prize = fromHex(l.data.slice(0, 66)) / 1e18;
-    winRounds[roundId] = { winner, prize };
-  });
-
-  logs.filter(l => l.topics[0] === TOPIC_JACKPOT).forEach(l => {
-    const winner = '0x' + l.topics[1].slice(26);
-    const data = l.data.slice(2);
-    const prize = fromHex(data.slice(0, 64)) / 1e18;
-    const block = fromHex(l.blockNumber);
-    jackpotHits[block] = { winner, prize };
-  });
-
-  allEvents = [];
-  logs.filter(l => l.topics[0] === TOPIC_BET).forEach(l => {
-    const roundId = fromHex(l.topics[1]);
-    const player = '0x' + l.topics[2].slice(26);
-    const data = l.data.slice(2);
-    const amount = fromHex(data.slice(0, 64)) / 1e18;
-    const pool = fromHex(data.slice(64, 128)) / 1e18;
-    const block = fromHex(l.blockNumber);
-
-    const wonRound = winRounds[roundId] && winRounds[roundId].winner.toLowerCase() === player.toLowerCase();
-    const hitJackpot = jackpotHits[block] && jackpotHits[block].winner.toLowerCase() === player.toLowerCase();
-
-    allEvents.push({
-      roundId, player, amount, pool, block,
-      wonRound: wonRound ? winRounds[roundId].prize : 0,
-      hitJackpot: hitJackpot ? jackpotHits[block].prize : 0,
-    });
-  });
-
-  // Newest first, keep max 10
-  allEvents.reverse();
-  allEvents = allEvents.slice(0, 10);
+  for (let i = currentRoundId - 1; i >= 1 && allRounds.length < 10; i--) {
+    try {
+      const raw = (await callContract(histSel, i.toString(16).padStart(64,'0'))).slice(2);
+      if (!raw || raw.length < 256) continue;
+      const f = [];
+      for (let j = 0; j < raw.length; j += 64) f.push(raw.slice(j, j+64));
+      const winner = '0x' + f[0].slice(24);
+      const prize = fromHex(f[1]) / 1e18;
+      const totalBets = fromHex(f[2]);
+      const endBlock = fromHex(f[3]);
+      if (prize === 0 && totalBets === 0) continue;
+      allRounds.push({ id: i, winner, prize, totalBets, endBlock });
+    } catch(e) {}
+  }
 }
 
 function renderHistoryPage() {
   const el = document.getElementById('history');
   const statsEl = document.getElementById('history-stats');
 
-  if (allEvents.length === 0) {
-    el.innerHTML = '<div class="text-center text-gray-600 text-sm py-4">暂无投注记录</div>';
+  if (allRounds.length === 0) {
+    el.innerHTML = '<div class="text-center text-gray-600 text-sm py-4">暂无历史记录</div>';
     return;
   }
 
-  const pageEvents = allEvents;
-  statsEl.textContent = `最近 ${allEvents.length} 笔`;
+  statsEl.textContent = `最近 ${allRounds.length} 局`;
 
   el.innerHTML = `
     <table class="w-full text-sm">
       <thead>
         <tr class="text-gray-500 text-xs text-left">
           <th class="pb-2">轮次</th>
-          <th class="pb-2">投注者</th>
-          <th class="pb-2 text-right">金额</th>
+          <th class="pb-2">赢家</th>
           <th class="pb-2 text-right">奖池</th>
-          <th class="pb-2 text-right">中奖</th>
-          <th class="pb-2 text-right">区块</th>
+          <th class="pb-2 text-right">投注数</th>
+          <th class="pb-2 text-right">结束区块</th>
         </tr>
       </thead>
       <tbody>
-        ${pageEvents.map(e => {
-          let badge = '<span class="text-gray-600 text-xs">-</span>';
-          if (e.wonRound > 0 && e.hitJackpot > 0) {
-            badge = `<span class="text-xs px-1.5 py-0.5 rounded-full bg-yellow-500/10 text-yellow-400">赢 ${e.wonRound.toFixed(1)}</span>
-                     <span class="text-xs px-1.5 py-0.5 rounded-full bg-purple-500/10 text-purple-400 ml-1">大奖 ${e.hitJackpot.toFixed(1)}</span>`;
-          } else if (e.wonRound > 0) {
-            badge = `<span class="text-xs px-1.5 py-0.5 rounded-full bg-yellow-500/10 text-yellow-400">赢 ${e.wonRound.toFixed(1)}</span>`;
-          } else if (e.hitJackpot > 0) {
-            badge = `<span class="text-xs px-1.5 py-0.5 rounded-full bg-purple-500/10 text-purple-400">大奖 ${e.hitJackpot.toFixed(1)}</span>`;
-          }
-          return `
-          <tr class="table-row">
-            <td class="py-2 mono text-gray-400">#${e.roundId}</td>
-            <td class="py-2 mono text-blue-400">${short(e.player)}</td>
-            <td class="py-2 mono text-gray-300 text-right">${e.amount.toFixed(1)}</td>
-            <td class="py-2 mono text-yellow-400/70 text-right">${e.pool.toFixed(1)}</td>
-            <td class="py-2 text-right">${badge}</td>
-            <td class="py-2 mono text-gray-600 text-right">${e.block.toLocaleString()}</td>
-          </tr>`;
-        }).join('')}
+        ${allRounds.map(r => `
+        <tr class="table-row">
+          <td class="py-2 mono text-gray-400 font-bold">#${r.id}</td>
+          <td class="py-2 mono text-blue-400">${short(r.winner)}</td>
+          <td class="py-2 text-right">
+            <span class="mono text-yellow-400">${r.prize.toFixed(2)} AXON</span>
+          </td>
+          <td class="py-2 mono text-gray-400 text-right">${r.totalBets}</td>
+          <td class="py-2 mono text-gray-600 text-right">${r.endBlock.toLocaleString()}</td>
+        </tr>`).join('')}
       </tbody>
     </table>`;
-
 }
 
 async function update() {
   try {
     const s = await getStatus();
     renderLive(s);
-    await loadAllEvents();
+    const latestRound = s.active ? s.roundId : s.roundId + 1;
+    await loadRounds(latestRound);
     renderHistoryPage();
   } catch(e) {
     console.error(e);
