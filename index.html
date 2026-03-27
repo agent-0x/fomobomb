@@ -62,8 +62,8 @@
 </div>
 
 <!-- Jackpot History -->
-<div id="jackpot-section" class="card p-5 mb-6 hidden">
-  <div class="font-semibold text-purple-400 mb-3">大奖记录</div>
+<div id="jackpot-section" class="card p-5 mb-6 glow-purple hidden">
+  <div class="font-semibold text-purple-400 mb-3">大奖中奖记录</div>
   <div id="jackpot-history"></div>
 </div>
 
@@ -229,6 +229,7 @@ async function renderHistory(currentRound) {
           <th class="pb-2">局</th>
           <th class="pb-2">赢家</th>
           <th class="pb-2 text-right">奖池</th>
+          <th class="pb-2 text-right">类型</th>
           <th class="pb-2 text-right">投注数</th>
           <th class="pb-2 text-right">结束区块</th>
         </tr>
@@ -239,8 +240,59 @@ async function renderHistory(currentRound) {
           <td class="py-2 mono text-gray-400">#${r.id}</td>
           <td class="py-2 mono text-blue-400">${short(r.winner)}</td>
           <td class="py-2 mono text-yellow-400 text-right">${r.prize.toFixed(2)}</td>
+          <td class="py-2 text-right"><span class="text-xs px-2 py-0.5 rounded-full bg-yellow-500/10 text-yellow-400">倒计时</span></td>
           <td class="py-2 mono text-gray-400 text-right">${r.totalBets}</td>
           <td class="py-2 mono text-gray-600 text-right">${r.endBlock.toLocaleString()}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  `;
+
+  // Load jackpot history
+  await renderJackpotHistory();
+}
+
+async function renderJackpotHistory() {
+  const section = document.getElementById('jackpot-section');
+  const el = document.getElementById('jackpot-history');
+
+  // Get jackpotWins count
+  const winsRaw = await callContract('cb98df73');
+  const wins = fromHex(winsRaw);
+  if (wins === 0) { section.classList.add('hidden'); return; }
+
+  section.classList.remove('hidden');
+  const records = [];
+  for (let i = wins - 1; i >= 0 && records.length < 10; i--) {
+    const raw = (await callContract('8b31260f', hex(i).padStart(64,'0'))).slice(2);
+    const f = [];
+    for (let j = 0; j < raw.length; j += 64) f.push(raw.slice(j, j+64));
+    const winner = '0x' + f[0].slice(24);
+    const prize = fromHex(f[1]) / 1e18;
+    const atBlock = fromHex(f[2]);
+    const roundId = fromHex(f[3]);
+    if (prize > 0) records.push({ winner, prize, atBlock, roundId });
+  }
+
+  if (records.length === 0) { section.classList.add('hidden'); return; }
+
+  el.innerHTML = `
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-gray-500 text-xs text-left">
+          <th class="pb-2">局</th>
+          <th class="pb-2">赢家</th>
+          <th class="pb-2 text-right">大奖金额</th>
+          <th class="pb-2 text-right">区块</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${records.map(r => `
+        <tr class="table-row">
+          <td class="py-2 mono text-gray-400">#${r.roundId}</td>
+          <td class="py-2 mono text-purple-400">${short(r.winner)}</td>
+          <td class="py-2 mono text-purple-300 text-right">${r.prize.toFixed(2)}</td>
+          <td class="py-2 mono text-gray-600 text-right">${r.atBlock.toLocaleString()}</td>
         </tr>`).join('')}
       </tbody>
     </table>
