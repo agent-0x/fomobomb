@@ -1,59 +1,58 @@
-# FomoBomb — Axon 链上 FOMO 博弈游戏 AI Skill
+# FomoBomb — Axon 链上 FOMO 博弈游戏
 
-让 AI Agent 学会玩 FomoBomb：一个部署在 Axon Chain 上的倒计时博弈游戏。
+> **核心规则：每次投注重置 100 块倒计时。连续 100 块没人投注 → 游戏结束 → 最后一个投注的人赢走所有奖池。**
 
-## 游戏简介
+每次投注还有 **2% 概率** 命中跨局累积的随机大奖。
 
-FomoBomb 是一个链上 FOMO 倒计时炸弹游戏。玩家投入 AXON 代币重置倒计时，倒计时结束时最后一个投入的人赢走整个奖池。每次投入还有 2% 概率赢走跨局累积的大奖池。
+## 一句话理解
 
-**合约地址:** `0xc90576a5e136be4a1842c6883c6fe6cb43e02325`
-**链:** Axon Mainnet (Chain ID: 8210)
-**RPC:** `https://mainnet-rpc.axonchain.ai/`
+你投 1 AXON 进去，倒计时重置。别人也投，倒计时又重置。没人敢投了？等 100 块，最后那个人通吃。但谁都不想当"倒数第二个"。
 
-## 作为 Claude Code Skill 使用
+## 合约信息
 
-将 `skill.md` 放入你的 Claude Code skills 目录：
+| | |
+|---|---|
+| **合约** | `0xc90576a5e136be4a1842c6883c6fe6cb43e02325` |
+| **链** | Axon Mainnet (Chain ID: 8210) |
+| **RPC** | `https://mainnet-rpc.axonchain.ai/` |
+| **倒计时** | 100 块 (~10 分钟) |
+| **最低投注** | 1 AXON |
+
+## 钱怎么分
+
+每次投注扣 5% 手续费，剩下 95% 进奖池：
+
+```
+你投 1 AXON
+  └─ 0.95 → 当局奖池（最后一人赢走）
+  └─ 0.03 → 大奖池（2% 概率即开即中，跨局累积）
+  └─ 0.02 → 金库
+```
+
+## 博弈点
+
+**核心矛盾：每个人都想当最后一个，但如果大家都等着不投，倒计时就走完了。**
+
+- 你投了，别人可能跟投把你挤掉
+- 你不投，万一没人投了你就错过了
+- 倒计时越短，心理压力越大
+- 大奖池越大，越多人忍不住"赌一把"
+
+## 给 AI Agent 用
+
+### Claude Code Skill
 
 ```bash
-# 全局安装
 cp skill.md ~/.claude/skills/fomobomb.md
-
-# 或项目级安装
-cp skill.md .claude/skills/fomobomb.md
 ```
 
-然后在 Claude Code 中使用：
-```
-/fomobomb 查看当前游戏状态
-/fomobomb 投注 1 AXON
-/fomobomb 领取奖金
-```
-
-## 游戏规则
-
-| 参数 | 值 |
-|------|-----|
-| 倒计时 | 100 个区块（约 10 分钟） |
-| 最低投注 | 1 AXON |
-| 手续费 | 5%（3% 大奖池 + 2% 金库） |
-| 大奖概率 | 每次投注 2% |
-| 结算方式 | Pull payment（需手动提取） |
-
-## 博弈策略
-
-核心矛盾：**每个人都想当最后一个投注的人，但如果大家都等着，倒计时就走完了。**
-
-- **狙击策略：** 在倒计时最后几个区块投注
-- **心理博弈：** 大奖池越大，越多人愿意投注"赌一把"
-- **EV 计算：** `期望收益 = 赢奖池概率 × 奖池 + 0.02 × 大奖池 - 投注额`
-
-## 文件说明
+### 文件
 
 | 文件 | 说明 |
 |------|------|
-| `skill.md` | Claude Code Skill 定义文件 |
-| `FomoBomb.sol` | Solidity 合约源码（已通过 Codex 5 轮审计） |
-| `bot_example.py` | 完整的自动投注机器人示例 |
+| `skill.md` | Claude Code Skill（完整接口 + 策略 + 代码） |
+| `FomoBomb.sol` | Solidity 合约源码（Codex 5 轮审计通过） |
+| `bot_example.py` | 自动狙击机器人示例 |
 
 ## License
 
